@@ -20,7 +20,7 @@ load_dotenv()
 initialize_tables()
 
 # --- Backend API ---
-API_BASE = "http://127.0.0.1:8000/lostfound"
+API_BASE = os.getenv("API_BASE")
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 SENDER_EMAIL = os.getenv("Sender_email")
