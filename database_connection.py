@@ -5,7 +5,7 @@ import base64
 import json
 import os
 
-service_account_info = json.loads(base64.b64decode(st.secrets["service_account_base64"]))
+service_account_info = json.loads(base64.b64decode(os.getenv("service_account_base64")))
 
 credentials_path = "/tmp/service_account.json"
 
@@ -16,10 +16,10 @@ with open(credentials_path, "w") as f:
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
 
-db_user = st.secrets["db_user"]
-db_pass = st.secrets["db_pass"]
-db_name = st.secrets["db_name"]
-connection_name = st.secrets["instance_connection_name"]
+db_user = os.getenv("db_user")
+db_pass = os.getenv("db_pass")
+db_name = os.getenv("db_name")
+connection_name = os.getenv("instance_connection_name")
 
 
 
