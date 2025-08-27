@@ -16,6 +16,7 @@ import ssl
 from email.message import EmailMessage
 import requests
 from io import BytesIO
+from tempfile import NamedTemporaryFile
 
 
 load_dotenv()
@@ -36,7 +37,7 @@ if "lost-items" not in pc.list_indexes():
         name="lost-items",
         dimension=embedding_dim,
         metric="cosine",
-        spec=ServerlessSpec(cloud="gcp", region="us-west1")
+        spec=ServerlessSpec(cloud="aws", region="us-east-1")
     )
 
 item_index = pc.Index("lost-items")
@@ -46,7 +47,7 @@ if "users" not in pc.list_indexes():
         name="users",
         dimension=embedding_dim,
         metric="cosine",
-        spec=ServerlessSpec(cloud="gcp", region="us-west1")
+        spec=ServerlessSpec(cloud="aws", region="us-east-1")
     )
 
 user_index = pc.Index("users")
@@ -75,39 +76,79 @@ def add_item_to_pinecone(item_id: int, metadata_text: str):
     return text_emb
 
 
-def assistant_suggest_metadata(state: ItemVerificationState) -> ItemVerificationState:
-  
-    resp = requests.get(state.image_path)
-    if resp.status_code != 200:
-        raise ValueError(f"Failed to download image: {state.image_path}")
-
-    image_file = BytesIO(resp.content)
-    my_file = client.files.upload(file=image_file)
-    prompt = (
-        "Describe this lost item in JSON format with fields: "
-        "type, brand, color, condition, description. "
-        "Include any text visible in the image in hidden_details."
-    )
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=[my_file, prompt])
-    
+def upload_image_to_gemini(image_path: str):
+    """
+    Upload a local file or remote URL to Gemini.
+    Cleans up temporary files automatically.
+    """
+    tmp_path = None
     try:
-        suggested_metadata = json.loads(response.text)
-    except:
-        suggested_metadata = {
-            "type": None,
-            "brand": None,
-            "color": None,
-            "condition": None,
-            "description": response.text.strip(),
-            "hidden_details":None
-        }
+        if image_path.startswith("http"):
+            resp = requests.get(image_path)
+            resp.raise_for_status()
 
-    state.update(suggested_metadata)
-    state["assistant_response"] = response.text
-    state["status"] = "pending"
+            # Determine file extension
+            ext = os.path.splitext(image_path)[-1] or ".png"
+
+            with NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(resp.content)
+                tmp_path = tmp.name
+        else:
+            tmp_path = image_path
+
+        # Upload to Gemini
+        return client.files.upload(file=tmp_path)
+
+    finally:
+        # Remove temp file if we created one
+        if image_path.startswith("http") and tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def assistant_suggest_metadata(state: ItemVerificationState) -> ItemVerificationState:
+    """
+    Suggest metadata for a lost item using Gemini model.
+    Handles both local and remote images safely.
+    """
+    try:
+        # Upload image to Gemini (handles temp file)
+        my_file = upload_image_to_gemini(state.image_path)
+
+        # Prompt for Gemini
+        prompt = (
+            "Describe this lost item in JSON format with fields: "
+            "type, brand, color, condition, description. "
+            "Include any text visible in the image in hidden_details."
+        )
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[my_file, prompt]
+        )
+
+        # Attempt to parse JSON metadata
+        try:
+            suggested_metadata = json.loads(response.text)
+        except json.JSONDecodeError:
+            suggested_metadata = {
+                "type": None,
+                "brand": None,
+                "color": None,
+                "condition": None,
+                "description": response.text.strip(),
+                "hidden_details": None
+            }
+
+        # Update state
+        state.update(suggested_metadata)
+        state["assistant_response"] = response.text
+        state["status"] = "pending"
+
+    except Exception as e:
+        state["assistant_response"] = f"Error generating metadata: {str(e)}"
+        state["status"] = "error"
 
     return state
-
 
 def human_review(state: ItemVerificationState) -> ItemVerificationState:
     """
@@ -216,27 +257,30 @@ def send_email(user_email: str, items: list[dict]):
         return f"❌ Unexpected error: {e}"
 
 def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
-    if state.get("human_comment"): 
-        try: 
-            human_data = json.loads(state["human_comment"]) 
-        except: 
-            human_data = {} 
-    else: 
-        human_data = {}
-    for k, v in human_data.items(): 
-        state[k] = v
+    """
+    Finalize metadata after human review, store in DB, add embeddings, 
+    and notify unclaimed users if any match.
+    """
+    # Load human corrections
+    human_data = {}
+    if state.get("human_comment"):
+        try:
+            human_data = json.loads(state["human_comment"])
+        except Exception as e:
+            print(f"Failed to parse human comment: {e}")
+    state.update(human_data)
 
-    corrected_metadata = {
+    # Prepare corrected metadata
+    corrected_metadata = sanitize_metadata({
         "type": state.get("type", ""),
         "brand": state.get("brand", ""),
         "color": state.get("color", ""),
         "condition": state.get("condition", ""),
         "description": state.get("description", ""),
         "hidden_details": state.get("hidden_details", "")
-    }
-    corrected_metadata = sanitize_metadata(corrected_metadata)
-    
-    # --- Insert into lost_items table ---
+    })
+
+    # Insert into DB
     with engine.begin() as conn:
         result = conn.execute(
             text("""
@@ -264,46 +308,35 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
         item_id = result.lastrowid
         state["item_id"] = item_id
 
-    # --- Generate item embedding and add to FAISS ---
+    # Add embedding to Pinecone
     metadata_text = " ".join(corrected_metadata.values())
     item_emb = add_item_to_pinecone(item_id, metadata_text)
 
-
-    # --- Check unclaimed users ---
+    # Check for unclaimed users
     with engine.begin() as conn:
-        users = conn.execute(
-            text("SELECT id, uploader_email FROM unclaimed_items")
-        ).fetchall()
+        users = conn.execute(text("SELECT id, uploader_email FROM unclaimed_items")).fetchall()
 
-    query_response = user_index.query(
-        vector=item_emb.tolist(),
-        top_k=1,
-        include_values=False
-    )
+    matched_user_id, similarity = None, 0
+    query_response = user_index.query(vector=item_emb.tolist(), top_k=1, include_values=False)
+    if query_response.matches:
+        matched_user_id = int(query_response.matches[0].id)
+        similarity = query_response.matches[0].score
 
-    matches = query_response.matches
-    if matches:
-        matched_user_id = int(matches[0].id)
-        similarity = matches[0].score
-
-    if similarity > 0.70 and matched_user_id:
+    if matched_user_id and similarity > 0.70:
         matched_user = next((u for u in users if u[0] == matched_user_id), None)
         if matched_user:
-            item_details = [{
-                "item_id": item_id,
-                "pickup_location": state.get("current_location") or "Not specified"
-            }]
+            item_details = [{"item_id": item_id, "pickup_location": state.get("current_location") or "Not specified"}]
             print(send_email(matched_user[1], item_details))
 
+            # Remove matched user and item from DB and Pinecone
             with engine.begin() as conn:
                 conn.execute(text("DELETE FROM unclaimed_items WHERE id = :id"), {"id": matched_user_id})
                 conn.execute(text("DELETE FROM lost_items WHERE id = :id"), {"id": item_id})
-
-            # Delete from Pinecone
             user_index.delete(ids=[str(matched_user_id)])
             item_index.delete(ids=[str(item_id)])
     else:
-        print(f"No unclaimed user matched Pinecone ID {matched_user_id}")
+        print("No matching unclaimed user found.")
+
     state.update(corrected_metadata)
     state["status"] = "approved"
     return state

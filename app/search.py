@@ -20,6 +20,8 @@ import re
 import smtplib
 import ssl
 from email.message import EmailMessage
+import requests
+from tempfile import NamedTemporaryFile
 
 memory = MemorySaver()
 embedding_dim = 3072
@@ -38,7 +40,7 @@ if "lost-items" not in pc.list_indexes():
         name="lost-items",
         dimension=embedding_dim,
         metric="cosine",
-        spec=ServerlessSpec(cloud="gcp", region="us-west1")
+        spec=ServerlessSpec(cloud="aws", region="us-east-1")
     )
 
 item_index = pc.Index("lost-items")
@@ -48,13 +50,38 @@ if "users" not in pc.list_indexes():
         name="users",
         dimension=embedding_dim,
         metric="cosine",
-        spec=ServerlessSpec(cloud="gcp", region="us-west1")
+        spec=ServerlessSpec(cloud="aws", region="us-east-1")
     )
 
 user_index = pc.Index("users")
 
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0,api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def upload_image_to_gemini(image_path: str):
+    tmp_path = None
+    try:
+        if image_path.startswith("http"):  # Case 1: Remote URL
+            resp = requests.get(image_path)
+            resp.raise_for_status()
+            
+            # Extract extension (default to .png if missing)
+            ext = os.path.splitext(image_path)[-1] or ".png"
+            
+            with NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                tmp.write(resp.content)
+                tmp_path = tmp.name
+        else:  # Case 2: Local file
+            tmp_path = image_path
+
+        # Upload to Gemini
+        return client.files.upload(file=tmp_path)
+
+    finally:
+        # Clean up temp file if we created one
+        if image_path.startswith("http") and tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 def add_user_to_pinecone(user_id: int, user_text: str):
     user_emb = np.array(openai_embeddings.embed_query(user_text), dtype=np.float32)
@@ -74,7 +101,7 @@ def generate_metadata(query: str = None, image_path: str = None) -> dict:
         )
         response = client.models.generate_content(model="gemini-2.5-flash", contents=[query, prompt])
     elif image_path:
-        my_file = client.files.upload(file=image_path)
+        my_file = upload_image_to_gemini(image_path)
         prompt = (
             "Describe this lost item in JSON format with fields: "
             "type, brand, color, condition, description. "

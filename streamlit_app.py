@@ -55,29 +55,23 @@ if "otp" not in st.session_state:
 GCP_BUCKET = os.getenv("GCP_BUCKET")
 
 def upload_to_gcs(local_file: Path, bucket_name: str, expiration_minutes=60):
-    """
-    Uploads a local file to GCS and returns a signed URL (works with UBLA enabled).
-    """
-    # Decode service account from environment variable
     service_account_info = json.loads(base64.b64decode(os.getenv("service_account_base64")))
     credentials_path = "/tmp/service_account.json"
-
     with open(credentials_path, "w") as f:
         json.dump(service_account_info, f)
-
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
-    # Initialize client and bucket
+    
     client = storage.Client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(local_file.name)
-
-    # Upload the file
     blob.upload_from_filename(str(local_file))
-
-    # Generate a signed URL valid for `expiration_minutes` minutes
     signed_url = blob.generate_signed_url(expiration=timedelta(minutes=expiration_minutes))
+    # Clean temp file
+    if local_file.exists():
+        local_file.unlink()
     return signed_url
+
 def check_email_validity(email):
     try:
         valid = validate_email(email)
@@ -364,7 +358,7 @@ if st.session_state["email_verified"]:
                             st.session_state["messages"].append({
                                 "role": "user",
                                 "type": "image",
-                                "content": str(temp_path)
+                                "content": public_url
                             })
                         
                         
