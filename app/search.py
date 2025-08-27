@@ -11,9 +11,9 @@ import json
 from dotenv import load_dotenv
 load_dotenv()
 client = genai.Client()
-from app.upload import to_faiss_vector
+
 from langchain_openai import OpenAIEmbeddings
-import faiss
+from pinecone import Pinecone, ServerlessSpec
 import os
 import numpy as np
 import re
@@ -29,27 +29,36 @@ SMTP_PORT = 465
 SENDER_EMAIL = os.getenv("Sender_email")
 SENDER_PASSWORD = os.getenv("App_Password")
 
-item_faiss_file = "./faiss_item_index.index"
-user_faiss_file = "./faiss_user_index.index"
 
-if os.path.exists(item_faiss_file):
-    item_faiss_index = faiss.read_index(item_faiss_file)
-else:
-    item_faiss_index = faiss.IndexIDMap(faiss.IndexFlatIP(embedding_dim))
 
-if os.path.exists(user_faiss_file):
-    user_faiss_index = faiss.read_index(user_faiss_file)
-else:
-    user_faiss_index = faiss.IndexIDMap(faiss.IndexFlatIP(embedding_dim))
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
+
+if "lost-items" not in pc.list_indexes():
+    pc.create_index(
+        name="lost-items",
+        dimension=embedding_dim,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="gcp", region="us-west1")
+    )
+
+item_index = pc.Index("lost-items")
+
+if "users" not in pc.list_indexes():
+    pc.create_index(
+        name="users",
+        dimension=embedding_dim,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="gcp", region="us-west1")
+    )
+
+user_index = pc.Index("users")
+
 
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0,api_key=os.getenv("OPENAI_API_KEY"))
 
-def add_user_to_faiss(user_id: int, user_text: str):
+def add_user_to_pinecone(user_id: int, user_text: str):
     user_emb = np.array(openai_embeddings.embed_query(user_text), dtype=np.float32)
-    user_emb = to_faiss_vector(user_emb)
-
-    user_faiss_index.add_with_ids(user_emb, np.array([user_id], dtype=np.int64))
-    faiss.write_index(user_faiss_index, user_faiss_file)
+    user_index.upsert([(str(user_id), user_emb.tolist())])
     return user_emb
 
 def generate_metadata(query: str = None, image_path: str = None) -> dict:
@@ -168,24 +177,6 @@ def parse_assistant_metadata(metadata_dict):
 
 @tool
 def embedding_search_tool_func(query: str = None, image_path: str = None, top_k: int = 1):
-    """
-    Description:
-        Search for lost items using FAISS and OpenAI embeddings generated from text or image. 
-        Determines if a high-confidence match exists.
-
-    Args:
-        query (str, optional): Description of the lost item.
-        image_path (str, optional): Path to an image of the lost item.
-        top_k (int, optional): Number of top matches to return. Defaults to 1.
-
-    Returns:
-        dict: {
-            "items": list of matched item IDs,
-            "confidence": float confidence score (0-1),
-            "message": str friendly message,
-            "conversation_done": bool indicates if conversation can end
-        }
-    """
     metadata_dict = {}
     if image_path:
         metadata_dict.update(generate_metadata(image_path=image_path))
@@ -204,16 +195,20 @@ def embedding_search_tool_func(query: str = None, image_path: str = None, top_k:
         corrected_metadata.get("description") or "",
         corrected_metadata.get("hidden_details") or ""
     ])
-    print(metadata_text)
-    text_emb = to_faiss_vector(np.array(openai_embeddings.embed_query(metadata_text), dtype=np.float32))
+    
+    text_emb = np.array(openai_embeddings.embed_query(metadata_text), dtype=np.float32)
 
-    if item_faiss_index.ntotal == 0:
-        return {"items": [], "confidence": 0.0, "message": "No items in the database yet.", "conversation_done": True}
-    D, I = item_faiss_index.search(text_emb, k=min(top_k, item_faiss_index.ntotal))
-    confidences = D[0].tolist()
-    matched_item_ids = I[0].tolist()
+    # Pinecone query
+    query_response = item_index.query(
+        vector=text_emb.tolist(),
+        top_k=top_k,
+        include_values=False
+    )
+
+    matched_item_ids = [str(match.id) for match in query_response.matches]
+    confidences = [match.score for match in query_response.matches]
     top_conf = max(confidences) if confidences else 0.0
-    print(top_conf,matched_item_ids)
+
     high_conf_threshold = 0.70
     low_conf_threshold = 0.4
 
@@ -221,8 +216,8 @@ def embedding_search_tool_func(query: str = None, image_path: str = None, top_k:
         message = "High confidence match found."
         conversation_done = True
         if matched_item_ids:
-            item_faiss_index.remove_ids(np.array(matched_item_ids, dtype=np.int64))
-            faiss.write_index(item_faiss_index, "./faiss_item_index.index")
+            # Delete matched items from Pinecone
+            item_index.delete(ids=matched_item_ids)
     elif top_conf >= low_conf_threshold:
         message = "Low confidence. Need more details from user."
         conversation_done = False
@@ -230,13 +225,13 @@ def embedding_search_tool_func(query: str = None, image_path: str = None, top_k:
         message = "No items found yet. We'll notify you once available or please check back in 2 days."
         conversation_done = True
 
+
     return {
         "items": matched_item_ids,
         "confidence": top_conf,
         "message": message,
         "conversation_done": conversation_done
     }
-
 
 @tool
 def unclaimed_item_store_tool_func(query: str = None, image_path: str = None, email: str = None, name: str = None):
@@ -277,7 +272,8 @@ def unclaimed_item_store_tool_func(query: str = None, image_path: str = None, em
         )
         item_id = result.lastrowid
 
-    add_user_to_faiss(item_id, metadata_text)
+    add_user_to_pinecone(item_id, metadata_text)
+
 
     return {"response": f"Your item has been noted, {email}. We'll notify you once it's found.", "conversation_done": True}
 

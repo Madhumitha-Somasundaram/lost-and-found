@@ -8,7 +8,7 @@ from database_connection import engine
 from google import genai
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
-import pinecone
+from pinecone import Pinecone, ServerlessSpec
 import os
 import numpy as np
 import smtplib
@@ -29,19 +29,27 @@ model = ChatOpenAI(model="gpt-4o-mini", temperature=0,api_key=os.getenv("OPENAI_
 
 embedding_dim = 3072
 openai_embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-pinecone.init(
-    api_key=os.getenv("PINECONE_API_KEY"),
-    environment="us-west1-gcp"  # replace with your Pinecone environment
-)
+pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
-# Create or connect to Pinecone indexes
-if "lost-items" not in pinecone.list_indexes():
-    pinecone.create_index("lost-items", dimension=embedding_dim, metric="cosine")
-item_index = pinecone.Index("lost-items")
+if "lost-items" not in pc.list_indexes():
+    pc.create_index(
+        name="lost-items",
+        dimension=embedding_dim,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="gcp", region="us-west1")
+    )
 
-if "users" not in pinecone.list_indexes():
-    pinecone.create_index("users", dimension=embedding_dim, metric="cosine")
-user_index = pinecone.Index("users")
+item_index = pc.Index("lost-items")
+
+if "users" not in pc.list_indexes():
+    pc.create_index(
+        name="users",
+        dimension=embedding_dim,
+        metric="cosine",
+        spec=ServerlessSpec(cloud="gcp", region="us-west1")
+    )
+
+user_index = pc.Index("users")
 class ItemVerificationState(MessagesState):
     image_path: str
     type: Optional[str]
@@ -273,8 +281,10 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
         include_values=False
     )
 
-    matched_user_id = int(query_response['matches'][0]['id']) if query_response['matches'] else None
-    similarity = query_response['matches'][0]['score'] if query_response['matches'] else 0.0
+    matches = query_response.matches
+    if matches:
+        matched_user_id = int(matches[0].id)
+        similarity = matches[0].score
 
     if similarity > 0.70 and matched_user_id:
         matched_user = next((u for u in users if u[0] == matched_user_id), None)
