@@ -29,7 +29,7 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 SENDER_EMAIL = os.getenv("Sender_email")
 SENDER_PASSWORD = os.getenv("App_Password")
-st.title("Lost & Found Agent")
+st.title("FyndIt - Lost & Found Agent")
 
 # --- Metadata fields ---
 metadata_fields = [

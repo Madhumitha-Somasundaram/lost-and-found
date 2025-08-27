@@ -335,7 +335,7 @@ def send_email_tool_func(user_email: str, items: list[dict]):
     if not items:
         return {"response": f"No items provided to send to {user_email}", "conversation_done": True}
 
-    subject = "Lost & Found Notification - University of Colorado Boulder"
+    subject = "🎉 Found It! Your Lost Item Awaits"
 
     # Plain text version (fallback)
     plain_body_lines = [
@@ -460,7 +460,7 @@ def followup_question_tool_func(context: dict):
 
 
 prompt_text = """
-You are the Lost & Found Assistant for the University of Colorado Boulder.
+You are the Lost & Found Assistant.
 
 Available tools:
 1. embedding_search_tool_func(query, image_path) → Find potentially matching lost items.

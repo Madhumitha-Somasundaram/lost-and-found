@@ -175,7 +175,7 @@ def send_email(user_email: str, items: list[dict]):
 
     
     
-    subject = "Lost & Found Notification - University of Colorado Boulder"
+    subject = "🎉 Found It! Your Lost Item Awaits"
 
     # Plain text version (fallback)
     plain_body_lines = [
@@ -186,7 +186,7 @@ def send_email(user_email: str, items: list[dict]):
     for item in items:
         plain_body_lines.append(
             f"- Item ID: {item.get('item_id', 'N/A')}\n"
-            f"  Pickup Location: {item.get('pickup_location', 'N/A')}\n"
+            f"- Pickup Location: {item.get('pickup_location', 'N/A')}\n"
         )
 
     plain_body_lines += [
@@ -194,7 +194,7 @@ def send_email(user_email: str, items: list[dict]):
         "If you believe this was sent in error, please ignore this message.\n",
         "---------------------------------------------",
         "Lost & Found Team",
-        "University of Colorado Boulder"
+        
     ]
     plain_body = "\n".join(plain_body_lines)
 
@@ -220,7 +220,7 @@ def send_email(user_email: str, items: list[dict]):
         <hr>
         <p>
         <b>Lost & Found Team</b><br>
-        University of Colorado Boulder
+        
         </p>
     </body>
     </html>
