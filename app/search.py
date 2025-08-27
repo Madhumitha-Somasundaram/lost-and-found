@@ -59,29 +59,48 @@ user_index = pc.Index("users")
 llm = ChatOpenAI(model="gpt-4o-mini", temperature=0,api_key=os.getenv("OPENAI_API_KEY"))
 
 
-def upload_image_to_gemini(image_path: str):
+def upload_image_from_url(image_path: str):
     tmp_path = None
     try:
-        if image_path.startswith("http"):  # Case 1: Remote URL
-            resp = requests.get(image_path)
-            resp.raise_for_status()
-            
-            # Extract extension (default to .png if missing)
-            ext = os.path.splitext(image_path)[-1] or ".png"
-            
-            with NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                tmp.write(resp.content)
-                tmp_path = tmp.name
-        else:  # Case 2: Local file
-            tmp_path = image_path
-
-        # Upload to Gemini
-        return client.files.upload(file=tmp_path)
+        resp = requests.get(image_path)
+        resp.raise_for_status() 
+        with NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            tmp.write(resp.content)
+            tmp_path = tmp.name
+        uploaded_file = client.files.upload(file=tmp_path)
+        return uploaded_file
 
     finally:
-        # Clean up temp file if we created one
-        if image_path.startswith("http") and tmp_path and os.path.exists(tmp_path):
+        if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+def parse_assistant_metadata(metadata_dict):
+    """
+    Cleans and parses assistant_response-like fields from metadata_dict.
+    """
+    assistant_response = metadata_dict.get("description", "")
+    assistant_response = assistant_response.encode('utf-8').decode('unicode_escape')
+    cleaned_response = re.sub(r"^```(?:json)?\n|```$", "", assistant_response.strip(), flags=re.MULTILINE)
+    try:
+        parsed_metadata = json.loads(cleaned_response)
+    except json.JSONDecodeError:
+        parsed_metadata = {
+            "type": "",
+            "brand": "",
+            "color": "",
+            "condition": "",
+            "description": cleaned_response,
+            "hidden_details": ""
+        }
+
+    for k in ["type", "brand", "color", "condition", "description", "hidden_details"]:
+        if k in parsed_metadata and parsed_metadata[k] is not None:
+            metadata_dict[k] = parsed_metadata[k]
+        else:
+            metadata_dict[k] = metadata_dict.get(k, "")
+    sanitized_metadata = {k: (v if v is not None else "") for k, v in metadata_dict.items()}
+    return sanitized_metadata
+
 
 def add_user_to_pinecone(user_id: int, user_text: str):
     user_emb = np.array(openai_embeddings.embed_query(user_text), dtype=np.float32)
@@ -101,12 +120,13 @@ def generate_metadata(query: str = None, image_path: str = None) -> dict:
         )
         response = client.models.generate_content(model="gemini-2.5-flash", contents=[query, prompt])
     elif image_path:
-        my_file = upload_image_to_gemini(image_path)
+        my_file = upload_image_from_url(image_path)
         prompt = (
             "Describe this lost item in JSON format with fields: "
             "type, brand, color, condition, description. "
             "Include any text visible in the image in hidden_details."
         )
+        
         response = client.models.generate_content(model="gemini-2.5-flash", contents=[my_file, prompt])
     else:
         return {}
@@ -152,6 +172,7 @@ def run_search_flow(query: str = None, image_path: str = None, user_email: str =
     first_message = len(conversation) == 0
 
     user_message_parts = []
+    
     if query:
         user_message_parts.append(f"Description: {query}")
     if image_path:
@@ -167,7 +188,7 @@ def run_search_flow(query: str = None, image_path: str = None, user_email: str =
     context = {"messages": user_messages}
 
     result = lost_found_agent.invoke(context, config=config)
-    print(result)
+    
     result["thread_id"] = thread_id
     return result
 
@@ -175,38 +196,12 @@ def run_search_flow(query: str = None, image_path: str = None, user_email: str =
 
 
 
-def parse_assistant_metadata(metadata_dict):
-    """
-    Cleans and parses assistant_response-like fields from metadata_dict.
-    """
-    assistant_response = metadata_dict.get("description", "")
-    assistant_response = assistant_response.encode('utf-8').decode('unicode_escape')
-    cleaned_response = re.sub(r"^```(?:json)?\n|```$", "", assistant_response.strip(), flags=re.MULTILINE)
-    try:
-        parsed_metadata = json.loads(cleaned_response)
-    except json.JSONDecodeError:
-        parsed_metadata = {
-            "type": "",
-            "brand": "",
-            "color": "",
-            "condition": "",
-            "description": cleaned_response,
-            "hidden_details": ""
-        }
-
-    for k in ["type", "brand", "color", "condition", "description", "hidden_details"]:
-        if k in parsed_metadata and parsed_metadata[k] is not None:
-            metadata_dict[k] = parsed_metadata[k]
-        else:
-            metadata_dict[k] = metadata_dict.get(k, "")
-    sanitized_metadata = {k: (v if v is not None else "") for k, v in metadata_dict.items()}
-    return sanitized_metadata
 
 @tool
 def embedding_search_tool_func(query: str = None, image_path: str = None, top_k: int = 1):
     """ 
         Description: 
-            Search for lost items using FAISS and OpenAI embeddings generated from text or image.
+            Search for lost items using Pinecone and OpenAI embeddings generated from text or image.
             Determines if a high-confidence match exists. 
         Args: 
             query (str, optional): Description of the lost item. 
@@ -238,7 +233,7 @@ def embedding_search_tool_func(query: str = None, image_path: str = None, top_k:
         corrected_metadata.get("description") or "",
         corrected_metadata.get("hidden_details") or ""
     ])
-    
+    print(metadata_text)
     text_emb = np.array(openai_embeddings.embed_query(metadata_text), dtype=np.float32)
 
     # Pinecone query
@@ -254,7 +249,7 @@ def embedding_search_tool_func(query: str = None, image_path: str = None, top_k:
 
     high_conf_threshold = 0.70
     low_conf_threshold = 0.4
-
+    print(confidences,matched_item_ids)
     if top_conf >= high_conf_threshold:
         message = "High confidence match found."
         conversation_done = True
@@ -280,7 +275,7 @@ def embedding_search_tool_func(query: str = None, image_path: str = None, top_k:
 def unclaimed_item_store_tool_func(query: str = None, image_path: str = None, email: str = None, name: str = None):
     """
     Description:
-        Store unclaimed items for future matching. Saves metadata and embeddings to database and FAISS.
+        Store unclaimed items for future matching. Saves metadata and embeddings to database and Pinecone.
 
     Args:
         query (str, optional): Description of the lost item.

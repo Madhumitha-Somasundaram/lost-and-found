@@ -68,7 +68,26 @@ class ItemVerificationState(MessagesState):
     assistant_response: str = ""
     human_comment: Optional[str] = None
 
+def upload_image_from_url(image_url: str):
+    tmp_path = None
+    try:
+        # Download image from TinyURL (or any URL)
+        resp = requests.get(image_url)
+        resp.raise_for_status()  # ensure download succeeded
 
+        # Save to a temporary file
+        with NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            tmp.write(resp.content)
+            tmp_path = tmp.name
+
+        # Upload to Gemini
+        uploaded_file = client.files.upload(file=tmp_path)
+        return uploaded_file
+
+    finally:
+        # Clean up temp file
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 def add_item_to_pinecone(item_id: int, metadata_text: str):
     text_emb = np.array(openai_embeddings.embed_query(metadata_text), dtype=np.float32)
@@ -76,44 +95,17 @@ def add_item_to_pinecone(item_id: int, metadata_text: str):
     return text_emb
 
 
-def upload_image_to_gemini(image_path: str):
-    """
-    Upload a local file or remote URL to Gemini.
-    Cleans up temporary files automatically.
-    """
-    tmp_path = None
-    try:
-        if image_path.startswith("http"):
-            resp = requests.get(image_path)
-            resp.raise_for_status()
-
-            # Determine file extension
-            ext = os.path.splitext(image_path)[-1] or ".png"
-
-            with NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                tmp.write(resp.content)
-                tmp_path = tmp.name
-        else:
-            tmp_path = image_path
-
-        # Upload to Gemini
-        return client.files.upload(file=tmp_path)
-
-    finally:
-        # Remove temp file if we created one
-        if image_path.startswith("http") and tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
 
 def assistant_suggest_metadata(state: ItemVerificationState) -> ItemVerificationState:
     """
     Suggest metadata for a lost item using Gemini model.
     Handles both local and remote images safely.
     """
+    
     try:
-        # Upload image to Gemini (handles temp file)
-        my_file = upload_image_to_gemini(state.image_path)
-
+        
+        my_file = upload_image_from_url(state["image_path"])
+       
         # Prompt for Gemini
         prompt = (
             "Describe this lost item in JSON format with fields: "
@@ -140,11 +132,13 @@ def assistant_suggest_metadata(state: ItemVerificationState) -> ItemVerification
             }
 
         # Update state
+        print(suggested_metadata)
         state.update(suggested_metadata)
         state["assistant_response"] = response.text
         state["status"] = "pending"
 
     except Exception as e:
+        print("error")
         state["assistant_response"] = f"Error generating metadata: {str(e)}"
         state["status"] = "error"
 
@@ -285,24 +279,18 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
         result = conn.execute(
             text("""
                 INSERT INTO lost_items
-                (item_type, brand, color, item_condition, description, hidden_details,
-                 found_location, pickup_location, image_url, uploader_name, uploader_email, status)
-                VALUES (:item_type, :brand, :color, :item_condition, :description, :hidden_details,
-                        :found_location, :pickup_location, :image_url, :uploader_name, :uploader_email, :status)
+                (description, hidden_details,found_location, pickup_location,uploader_name, uploader_email)
+                VALUES (:description, :hidden_details,:found_location, :pickup_location, :uploader_name, :uploader_email)
             """),
             {
-                "item_type": corrected_metadata["type"],
-                "brand": corrected_metadata["brand"],
-                "color": corrected_metadata["color"],
-                "item_condition": corrected_metadata["condition"],
+                
                 "description": corrected_metadata["description"],
                 "hidden_details": corrected_metadata["hidden_details"],
                 "found_location": state.get("location_found") or "",
                 "pickup_location": state.get("current_location") or "",
-                "image_url": state.get("image_path") or "",
                 "uploader_name": state.get("uploader_name") or "",
                 "uploader_email": state.get("uploader_email") or "",
-                "status": "unclaimed"
+                
             }
         )
         item_id = result.lastrowid
@@ -310,6 +298,7 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
 
     # Add embedding to Pinecone
     metadata_text = " ".join(corrected_metadata.values())
+    print(metadata_text)
     item_emb = add_item_to_pinecone(item_id, metadata_text)
 
     # Check for unclaimed users
@@ -321,7 +310,7 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
     if query_response.matches:
         matched_user_id = int(query_response.matches[0].id)
         similarity = query_response.matches[0].score
-
+    print(similarity)
     if matched_user_id and similarity > 0.70:
         matched_user = next((u for u in users if u[0] == matched_user_id), None)
         if matched_user:

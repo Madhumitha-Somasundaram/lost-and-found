@@ -55,22 +55,35 @@ if "otp" not in st.session_state:
 GCP_BUCKET = os.getenv("GCP_BUCKET")
 
 def upload_to_gcs(local_file: Path, bucket_name: str, expiration_minutes=60):
+    if not bucket_name:
+        raise ValueError("GCP_BUCKET is not set.")
+    
     service_account_info = json.loads(base64.b64decode(os.getenv("service_account_base64")))
     credentials_path = "/tmp/service_account.json"
     with open(credentials_path, "w") as f:
         json.dump(service_account_info, f)
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
-    
     client = storage.Client()
     bucket = client.bucket(bucket_name)
-    blob = bucket.blob(local_file.name)
+
+    # Safe filename
+    safe_filename = f"{uuid4()}{local_file.suffix}"
+    blob = bucket.blob(safe_filename)
+
     blob.upload_from_filename(str(local_file))
     signed_url = blob.generate_signed_url(expiration=timedelta(minutes=expiration_minutes))
-    # Clean temp file
+    import pyshorteners
+
+    signed_url = blob.generate_signed_url(expiration=timedelta(days=1))
+    s = pyshorteners.Shortener()
+    short_url = s.tinyurl.short(signed_url)
+    print(short_url)
     if local_file.exists():
         local_file.unlink()
-    return signed_url
+
+    return short_url
+
 
 def check_email_validity(email):
     try:
@@ -220,14 +233,8 @@ if st.session_state["email_verified"]:
 
                 # --- Request AI metadata using public URL ---
                 start_payload = {"image_path": public_url}
-                print("Payload sent to backend:", start_payload)
+                
                 start_resp = requests.post(f"{API_BASE}/lostfound/start", json=start_payload)
-                try:
-                    start_data = start_resp.json()
-                    print("Backend JSON:", start_data)
-                except Exception as e:
-                    print("Error parsing JSON from backend:", e)
-                    print("Raw response:", start_resp.text)
                 
                 if start_resp.status_code != 200:
                     st.error(f"Error starting AI metadata suggestion: {start_resp.text}")
@@ -298,7 +305,7 @@ if st.session_state["email_verified"]:
                             
                             with st.spinner("⌛ Verification submitted successfully! Returning to upload screen..."):
                                 st.success(f"The id for this item is {item_id}. Please use it for future reference if someone searches for their item.")
-                                time.sleep(50)
+                                time.sleep(10)
                             clear_session_state(metadata_fields + ["thread_id", "last_uploaded_file","mode"])
                             st.session_state["file_uploader_key"] += 1
                             st.rerun()
