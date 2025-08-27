@@ -178,29 +178,6 @@ if st.session_state["otp"]:
             
 if st.session_state["email_verified"]:
     if st.session_state["mode"] is None:
-        st.markdown("""
-            ### How it Works
-
-            1. **Upload Your Lost Item**
-            - Click the **Upload** button to add a photo of the item.
-            - The Agent will provide a details like **color, brand, type, description and any hidden details**.
-            - Verify the details before submission.
-            - Your information will be stored securely.
-
-            2. **Search for Your Item**
-            - You can search using **text description, image, or both**.
-            - If using text, include **detailed description**: color, brand, type, and any special features.
-            - The system will try to find a match and notify you via email.
-            - If the match is not found, it'll store the details and notify you whenver the match is found.
-
-            3. **Pickup Instructions**
-            - If a match is found, you will receive an email with:
-                - **Item description**
-                - **Pickup location**
-                - **Item ID**
-            - You can then collect your item from the specified location.
-
-            """)
         mode = st.radio("Select Mode:", ["Upload Item", "Search Item"], index=None)
         col1, col2, col3 = st.columns([1, 0.01, 6])  
 
@@ -228,6 +205,30 @@ if st.session_state["email_verified"]:
             if "uploaded_files" not in st.session_state:
                 st.session_state["uploaded_files"] = [] 
 
+            st.markdown("""
+            ### How it Works
+
+            1. **Upload a Found Item**
+            - Click the **Upload** button to add a photo of the item you found.
+            - The system will automatically extract and display details like **type, brand, color, description, and any hidden details**.
+            - Verify the details and submit.
+
+            2. **Automatic Matching & Notification**
+            - The system checks if the uploaded item matches any **reported lost items**.
+            - **If a match is found**:
+                - An email is automatically sent to the person who reported the item as lost.
+                - The email contains:
+                    - **Item description**
+                    - **Pickup location**
+                    - **Item ID**
+            - **If no match is found**:
+                - The item details are securely stored for future matching.
+
+            3. **Pickup Instructions**
+            - Only the person whose lost item matches the uploaded item will receive the email with pickup details.
+
+
+            """)
             uploaded_file = st.file_uploader(
                 "Upload item image", 
                 accept_multiple_files=False, 
@@ -353,6 +354,22 @@ if st.session_state["email_verified"]:
 
             # Collect user info
             if not st.session_state["submit"]:
+                st.markdown("""
+            ### How it Works:
+            1. **Search for Your Item**
+            - You can search using **text description, image, or both**.
+            - If using text, include **detailed description**: color, brand, type, and any special features.
+            - The system will try to find a match and notify you via email.
+            - If the match is not found, it'll store the details and notify you whenver the match is found.
+
+            2. **Pickup Instructions**
+            - If a match is found, you will receive an email with:
+                - **Item description**
+                - **Pickup location**
+                - **Item ID**
+            - You can then collect your item from the specified location.
+
+            """)
                 user_name=st.text_input("Uploader Name", value=st.session_state["user_name"], key="user_name", disabled=True)
                 user_email=st.text_input("Uploader Email", value=st.session_state["user_email"], key="user_email", disabled=True)
                 
