@@ -13,7 +13,7 @@ import random
 import ssl
 from db_schema import initialize_tables
 import os,base64
-
+import pyshorteners
 from google.cloud import storage
 # --- Initialize DB ---
 from dotenv import load_dotenv
@@ -73,9 +73,7 @@ def upload_to_gcs(local_file: Path, bucket_name: str, expiration_minutes=60):
 
     blob.upload_from_filename(str(local_file))
     signed_url = blob.generate_signed_url(expiration=timedelta(minutes=expiration_minutes))
-    import pyshorteners
-
-    signed_url = blob.generate_signed_url(expiration=timedelta(days=1))
+    
     s = pyshorteners.Shortener()
     short_url = s.tinyurl.short(signed_url)
     print(short_url)
