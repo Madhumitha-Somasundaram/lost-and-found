@@ -204,6 +204,22 @@ def parse_assistant_metadata(metadata_dict):
 
 @tool
 def embedding_search_tool_func(query: str = None, image_path: str = None, top_k: int = 1):
+    """ 
+        Description: 
+            Search for lost items using FAISS and OpenAI embeddings generated from text or image.
+            Determines if a high-confidence match exists. 
+        Args: 
+            query (str, optional): Description of the lost item. 
+            image_path (str, optional): Path to an image of the lost item. 
+            top_k (int, optional): Number of top matches to return. Defaults to 1. 
+        Returns: 
+            dict: { 
+            "items": list of matched item IDs, 
+            "confidence": float confidence score (0-1), 
+            "message": str friendly message, 
+            "conversation_done": bool indicates if conversation can end 
+            }
+    """
     metadata_dict = {}
     if image_path:
         metadata_dict.update(generate_metadata(image_path=image_path))
