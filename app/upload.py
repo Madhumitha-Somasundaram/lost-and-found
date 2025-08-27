@@ -32,7 +32,7 @@ embedding_dim = 3072
 openai_embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 
-if "lost-items" not in pc.list_indexes():
+if not pc.has_index("lost-items"):
     pc.create_index(
         name="lost-items",
         dimension=embedding_dim,
@@ -42,7 +42,7 @@ if "lost-items" not in pc.list_indexes():
 
 item_index = pc.Index("lost-items")
 
-if "users" not in pc.list_indexes():
+if not pc.has_index("users"):
     pc.create_index(
         name="users",
         dimension=embedding_dim,
