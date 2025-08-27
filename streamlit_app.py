@@ -13,7 +13,6 @@ import random
 import ssl
 from db_schema import initialize_tables
 import os,base64
-import pyshorteners
 from google.cloud import storage
 # --- Initialize DB ---
 from dotenv import load_dotenv
@@ -74,13 +73,11 @@ def upload_to_gcs(local_file: Path, bucket_name: str, expiration_minutes=60):
     blob.upload_from_filename(str(local_file))
     signed_url = blob.generate_signed_url(expiration=timedelta(minutes=expiration_minutes))
     
-    s = pyshorteners.Shortener()
-    short_url = s.tinyurl.short(signed_url)
-    print(short_url)
+    
     if local_file.exists():
         local_file.unlink()
 
-    return short_url
+    return signed_url
 
 
 def check_email_validity(email):
@@ -296,7 +293,7 @@ if st.session_state["email_verified"]:
                         }
 
                         resume_resp = requests.post(f"{API_BASE}/lostfound/resume", json=resume_payload)
-                       
+                        
                         if resume_resp.status_code == 200:
                             resp_data = resume_resp.json()
                             item_id = resp_data.get("item_id")
@@ -374,12 +371,12 @@ if st.session_state["email_verified"]:
                             "user_name":st.session_state["user_name"],
                             "thread_id": st.session_state["thread_id"]
                         }
-
+                        print(payload)
 
                         with st.spinner("Searching..."):
                             
                             resp = requests.post(f"{API_BASE}/lostfound/search_chat", json=payload)
-
+                        print(resp)
                         if resp.status_code == 200:
                             backend_json = resp.json()
                             agent_resp = backend_json.get("response", "")
@@ -408,6 +405,7 @@ if st.session_state["email_verified"]:
                         st.chat_message("user").markdown(chat_input)
 
                         # Prepare payload
+                        
                         payload = {
                             "text_input": chat_input,
                             "image_path": str(st.session_state["file"]) if st.session_state["file"] else None,
@@ -416,11 +414,11 @@ if st.session_state["email_verified"]:
                             "thread_id": st.session_state["thread_id"]
                         }
 
-                        
+                        print(payload)
 
                         with st.spinner("Searching..."):
                             resp = requests.post(f"{API_BASE}/lostfound/search_chat", json=payload)
-
+                        print(resp)
                         if resp.status_code == 200:
                             backend_json = resp.json()
                             print(backend_json)
