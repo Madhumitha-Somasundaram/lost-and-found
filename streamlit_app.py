@@ -12,11 +12,16 @@ from email_validator import validate_email, EmailNotValidError
 import random
 import ssl
 from db_schema import initialize_tables
-import os
-from dotenv import load_dotenv
-load_dotenv()
+import os,base64
 
+from google.cloud import storage
 # --- Initialize DB ---
+from dotenv import load_dotenv
+from pathlib import Path
+import json, base64, os
+from datetime import timedelta
+
+load_dotenv()
 initialize_tables()
 
 # --- Backend API ---
@@ -47,7 +52,32 @@ if "otp" not in st.session_state:
 
 
 # --- Helpers ---
+GCP_BUCKET = os.getenv("GCP_BUCKET")
 
+def upload_to_gcs(local_file: Path, bucket_name: str, expiration_minutes=60):
+    """
+    Uploads a local file to GCS and returns a signed URL (works with UBLA enabled).
+    """
+    # Decode service account from environment variable
+    service_account_info = json.loads(base64.b64decode(os.getenv("service_account_base64")))
+    credentials_path = "/tmp/service_account.json"
+
+    with open(credentials_path, "w") as f:
+        json.dump(service_account_info, f)
+
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
+
+    # Initialize client and bucket
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(local_file.name)
+
+    # Upload the file
+    blob.upload_from_filename(str(local_file))
+
+    # Generate a signed URL valid for `expiration_minutes` minutes
+    signed_url = blob.generate_signed_url(expiration=timedelta(minutes=expiration_minutes))
+    return signed_url
 def check_email_validity(email):
     try:
         valid = validate_email(email)
@@ -183,7 +213,7 @@ if st.session_state["email_verified"]:
                     clear_session_state(metadata_fields + ["thread_id", "last_uploaded_file"])
                     st.session_state["last_uploaded_file"] = uploaded_file.name
                 
-                st.image(Image.open(uploaded_file), caption="Uploaded Image", use_container_width=True)
+                st.image(Image.open(uploaded_file), caption="Uploaded Image", width='stretch')
 
                 # Save temporarily
                 temp_path = Path("temp_uploaded_image") / uploaded_file.name
@@ -191,10 +221,20 @@ if st.session_state["email_verified"]:
                 with open(temp_path, "wb") as f:
                     f.write(uploaded_file.getbuffer())
 
-                # --- Request AI metadata ---
-                start_payload = {"image_path": str(temp_path)}
-                start_resp = requests.post(f"{API_BASE}/start", json=start_payload)
+                # Upload to GCS and get public URL
+                public_url = upload_to_gcs(temp_path, GCP_BUCKET)
 
+                # --- Request AI metadata using public URL ---
+                start_payload = {"image_path": public_url}
+                print("Payload sent to backend:", start_payload)
+                start_resp = requests.post(f"{API_BASE}/lostfound/start", json=start_payload)
+                try:
+                    start_data = start_resp.json()
+                    print("Backend JSON:", start_data)
+                except Exception as e:
+                    print("Error parsing JSON from backend:", e)
+                    print("Raw response:", start_resp.text)
+                
                 if start_resp.status_code != 200:
                     st.error(f"Error starting AI metadata suggestion: {start_resp.text}")
                 else:
@@ -256,7 +296,7 @@ if st.session_state["email_verified"]:
                             "human_comment": json.dumps(human_comment_dict)
                         }
 
-                        resume_resp = requests.post(f"{API_BASE}/resume", json=resume_payload)
+                        resume_resp = requests.post(f"{API_BASE}/lostfound/resume", json=resume_payload)
                        
                         if resume_resp.status_code == 200:
                             resp_data = resume_resp.json()
@@ -316,17 +356,21 @@ if st.session_state["email_verified"]:
                             temp_path.parent.mkdir(exist_ok=True)
                             with open(temp_path, "wb") as f:
                                 f.write(uploaded_file.getbuffer())
-                            st.session_state["file"] = str(temp_path)
+
+                            # Upload to GCS
+                            public_url = upload_to_gcs(temp_path, GCP_BUCKET)
+                            st.session_state["file"] = public_url
+                            
                             st.session_state["messages"].append({
                                 "role": "user",
                                 "type": "image",
-                                "content": str(temp_path)  # local file path or base64 string
+                                "content": str(temp_path)
                             })
                         
                         
                         payload = {
                             "text_input": user_input,
-                            "image_path": str(st.session_state["file"]) if st.session_state["file"] else None,
+                            "image_path": st.session_state["file"],
                             "user_email": st.session_state["user_email"],
                             "user_name":st.session_state["user_name"],
                             "thread_id": st.session_state["thread_id"]
@@ -335,7 +379,7 @@ if st.session_state["email_verified"]:
 
                         with st.spinner("Searching..."):
                             
-                            resp = requests.post(f"{API_BASE}/search_chat", json=payload)
+                            resp = requests.post(f"{API_BASE}/lostfound/search_chat", json=payload)
 
                         if resp.status_code == 200:
                             backend_json = resp.json()
@@ -376,7 +420,7 @@ if st.session_state["email_verified"]:
                         
 
                         with st.spinner("Searching..."):
-                            resp = requests.post(f"{API_BASE}/search_chat", json=payload)
+                            resp = requests.post(f"{API_BASE}/lostfound/search_chat", json=payload)
 
                         if resp.status_code == 200:
                             backend_json = resp.json()

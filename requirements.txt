@@ -27,6 +27,8 @@ transformers
 python-dotenv
 easyocr
 torch
-faiss-cpu
+#faiss-cpu
+pinecone-client
 email-validator
 cloud-sql-python-connector
+google-cloud-storage

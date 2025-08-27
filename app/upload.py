@@ -8,12 +8,15 @@ from database_connection import engine
 from google import genai
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
-import faiss
+import pinecone
 import os
 import numpy as np
 import smtplib
 import ssl
 from email.message import EmailMessage
+import requests
+from io import BytesIO
+
 
 load_dotenv()
 SMTP_SERVER = "smtp.gmail.com"
@@ -26,18 +29,19 @@ model = ChatOpenAI(model="gpt-4o-mini", temperature=0,api_key=os.getenv("OPENAI_
 
 embedding_dim = 3072
 openai_embeddings = OpenAIEmbeddings(model="text-embedding-3-large")
-item_faiss_file = "./faiss_item_index.index"
-user_faiss_file = "./faiss_user_index.index"
-if os.path.exists(item_faiss_file):
-    item_faiss_index = faiss.read_index(item_faiss_file)
-else:
-    item_faiss_index = faiss.IndexIDMap(faiss.IndexFlatIP(embedding_dim))
+pinecone.init(
+    api_key=os.getenv("PINECONE_API_KEY"),
+    environment="us-west1-gcp"  # replace with your Pinecone environment
+)
 
-if os.path.exists(user_faiss_file):
-    user_faiss_index = faiss.read_index(user_faiss_file)
-else:
-    user_faiss_index = faiss.IndexIDMap(faiss.IndexFlatIP(embedding_dim))
+# Create or connect to Pinecone indexes
+if "lost-items" not in pinecone.list_indexes():
+    pinecone.create_index("lost-items", dimension=embedding_dim, metric="cosine")
+item_index = pinecone.Index("lost-items")
 
+if "users" not in pinecone.list_indexes():
+    pinecone.create_index("users", dimension=embedding_dim, metric="cosine")
+user_index = pinecone.Index("users")
 class ItemVerificationState(MessagesState):
     image_path: str
     type: Optional[str]
@@ -56,27 +60,21 @@ class ItemVerificationState(MessagesState):
     human_comment: Optional[str] = None
 
 
-def to_faiss_vector(embedding):
-    emb = np.array(embedding, dtype=np.float32)
-    if emb.ndim == 1:
-        emb = emb.reshape(1, -1)
-    assert emb.shape[1] == embedding_dim
-    faiss.normalize_L2(emb)
-    return emb
 
-
-def add_item_to_faiss(item_id: int, metadata_text: str):
-    text_emb = openai_embeddings.embed_query(metadata_text)
-    text_emb = to_faiss_vector(text_emb)
-    item_faiss_index.add_with_ids(text_emb, np.array([item_id], dtype=np.int64))
-    faiss.write_index(item_faiss_index, item_faiss_file)
+def add_item_to_pinecone(item_id: int, metadata_text: str):
+    text_emb = np.array(openai_embeddings.embed_query(metadata_text), dtype=np.float32)
+    item_index.upsert([(str(item_id), text_emb.tolist())])
     return text_emb
 
 
 def assistant_suggest_metadata(state: ItemVerificationState) -> ItemVerificationState:
   
+    resp = requests.get(state.image_path)
+    if resp.status_code != 200:
+        raise ValueError(f"Failed to download image: {state.image_path}")
 
-    my_file = client.files.upload(file=state["image_path"])
+    image_file = BytesIO(resp.content)
+    my_file = client.files.upload(file=image_file)
     prompt = (
         "Describe this lost item in JSON format with fields: "
         "type, brand, color, condition, description. "
@@ -260,7 +258,8 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
 
     # --- Generate item embedding and add to FAISS ---
     metadata_text = " ".join(corrected_metadata.values())
-    item_emb = add_item_to_faiss(item_id, metadata_text)
+    item_emb = add_item_to_pinecone(item_id, metadata_text)
+
 
     # --- Check unclaimed users ---
     with engine.begin() as conn:
@@ -268,12 +267,16 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
             text("SELECT id, uploader_email FROM unclaimed_items")
         ).fetchall()
 
-    D, I = user_faiss_index.search(item_emb, k=1)
-    similarity = D[0][0]
-    matched_user_id = I[0][0]
-    print(D, I)
-    print(metadata_text)
-    if similarity > 0.70:
+    query_response = user_index.query(
+        vector=item_emb.tolist(),
+        top_k=1,
+        include_values=False
+    )
+
+    matched_user_id = int(query_response['matches'][0]['id']) if query_response['matches'] else None
+    similarity = query_response['matches'][0]['score'] if query_response['matches'] else 0.0
+
+    if similarity > 0.70 and matched_user_id:
         matched_user = next((u for u in users if u[0] == matched_user_id), None)
         if matched_user:
             item_details = [{
@@ -283,21 +286,14 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
             print(send_email(matched_user[1], item_details))
 
             with engine.begin() as conn:
-                conn.execute(
-                    text("DELETE FROM unclaimed_items WHERE id = :id"),
-                    {"id": matched_user_id}
-                )
-                conn.execute(
-                    text("DELETE FROM lost_items WHERE id = :id"),
-                    {"id": item_id}
-                )
+                conn.execute(text("DELETE FROM unclaimed_items WHERE id = :id"), {"id": matched_user_id})
+                conn.execute(text("DELETE FROM lost_items WHERE id = :id"), {"id": item_id})
 
-            user_faiss_index.remove_ids(np.array([matched_user_id], dtype=np.int64))
-            item_faiss_index.remove_ids(np.array([item_id], dtype=np.int64))
-            faiss.write_index(user_faiss_index, "./faiss_user_index.index")
-            faiss.write_index(item_faiss_index, "./faiss_item_index.index")
-        else:
-            print(f"No unclaimed user matched FAISS ID {matched_user_id}")
+            # Delete from Pinecone
+            user_index.delete(ids=[str(matched_user_id)])
+            item_index.delete(ids=[str(item_id)])
+    else:
+        print(f"No unclaimed user matched Pinecone ID {matched_user_id}")
     state.update(corrected_metadata)
     state["status"] = "approved"
     return state
