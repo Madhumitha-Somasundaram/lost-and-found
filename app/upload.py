@@ -173,55 +173,39 @@ def send_email(user_email: str, items: list[dict]):
     if not items:
         return f"No items provided to send to {user_email}"
 
-    
-    
-    subject = "🎉 Found It! Your Lost Item Awaits"
+    # Only consider the first item
+    item = items[0]
+    item_desc = item.get("description", "your item")
+    subject = f"🎉 Found It! {item_desc} is Ready for Pickup"
 
-    # Plain text version (fallback)
-    plain_body_lines = [
-        "Hello,\n",
-        "We found item(s) that match your description:\n",
-    ]
+    # Plain text version
+    plain_body = f"""Hello,
 
-    for item in items:
-        plain_body_lines.append(
-            f"- Item ID: {item.get('item_id', 'N/A')}\n"
-            f"- Pickup Location: {item.get('pickup_location', 'N/A')}\n"
-        )
+We found your item! Here are the details:
+- Item ID: {item.get('item_id', 'N/A')}
+- Description: {item.get('description', 'N/A')}
+- Pickup Location: {item.get('pickup_location', 'N/A')}
 
-    plain_body_lines += [
-        "\nPlease pick up your item(s) at the mentioned location(s).",
-        "If you believe this was sent in error, please ignore this message.\n",
-        "---------------------------------------------",
-        "Lost & Found Team",
-        
-    ]
-    plain_body = "\n".join(plain_body_lines)
+Please pick up your item at the mentioned location.
+---------------------------------------------
+Lost & Found Team
+"""
 
     # HTML version
-    html_items = "".join(
-        f"<li><b>Item ID:</b> {item.get('item_id', 'N/A')}<br>"
-        f"<b>Pickup Location:</b> {item.get('pickup_location', 'N/A')}</li>"
-        for item in items
-    )
-
     html_body = f"""
     <html>
     <body style="font-family: Arial, sans-serif; line-height: 1.6;">
         <p>Hello,</p>
-        <p>We found item that match your description:</p>
+        <p>We found your item! Here are the details:</p>
         <ul>
-        {html_items}
+            <li><b>Item ID:</b> {item.get('item_id', 'N/A')}</li>
+            <li><b>Description:</b> {item.get('description', 'N/A')}</li>
+            <li><b>Pickup Location:</b> {item.get('pickup_location', 'N/A')}</li>
         </ul>
-        <p>
-        Please pick up your item at the mentioned location.<br>
-        If you believe this was sent in error, please ignore this message.
-        </p>
+        <p>Please pick up your item at the mentioned location.</p>
         <hr>
-        <p>
-        <b>Lost & Found Team</b><br>
-        
-        </p>
+        <p><b>Lost & Found Team</b></p>
+        <p style="font-size: 12px; color: #777;">This is an automated message. Please do not reply.</p>
     </body>
     </html>
     """
@@ -232,7 +216,6 @@ def send_email(user_email: str, items: list[dict]):
         msg["From"] = SENDER_EMAIL
         msg["To"] = user_email
 
-        # Add both plain text and HTML
         msg.set_content(plain_body)
         msg.add_alternative(html_body, subtype="html")
 
@@ -241,7 +224,7 @@ def send_email(user_email: str, items: list[dict]):
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.send_message(msg)
 
-        return f"✅ Email sent to {user_email} with {len(items)} item(s)."
+        return f"✅ Email sent to {user_email} for '{item_desc}'."
 
     except smtplib.SMTPAuthenticationError:
         return "❌ SMTP Authentication Error: Check your App Password."
@@ -314,7 +297,7 @@ def assistant_finalize(state: ItemVerificationState) -> ItemVerificationState:
     if matched_user_id and similarity > 0.70:
         matched_user = next((u for u in users if u[0] == matched_user_id), None)
         if matched_user:
-            item_details = [{"item_id": item_id, "pickup_location": state.get("current_location") or "Not specified"}]
+            item_details = [{"item_id": item_id, "pickup_location": state.get("current_location") or "Not specified","description": state.get("type")}]
             print(send_email(matched_user[1], item_details))
 
             # Remove matched user and item from DB and Pinecone

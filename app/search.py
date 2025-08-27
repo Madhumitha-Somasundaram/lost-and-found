@@ -260,7 +260,7 @@ def embedding_search_tool_func(query: str = None, image_path: str = None, top_k:
         message = "Low confidence. Need more details from user."
         conversation_done = False
     else:
-        message = "No items found yet. We'll notify you once available or please check back in 2 days."
+        message = "No items found yet. We'll notify you once available."
         conversation_done = True
 
 
@@ -324,7 +324,7 @@ def send_email_tool_func(user_email: str, items: list[dict]):
 
     Args:
         user_email (str): Recipient email address.
-        items (list[dict]): List of found items, each with `item_id` and `pickup_location`.
+        items (list[dict]): List containing exactly one item dict with `item_id`, `description`, and `pickup_location`.
 
     Returns:
         dict: {
@@ -335,53 +335,39 @@ def send_email_tool_func(user_email: str, items: list[dict]):
     if not items:
         return {"response": f"No items provided to send to {user_email}", "conversation_done": True}
 
-    subject = "🎉 Found It! Your Lost Item Awaits"
+    # Only consider the first item
+    item = items[0]
+    item_desc = item.get("description", "your item")
+    subject = f"🎉 Found It! {item_desc} is Ready for Pickup"
 
-    # Plain text version (fallback)
-    plain_body_lines = [
-        "Hello,\n",
-        "We found item that match your description:\n",
-    ]
+    # Plain text version
+    plain_body = f"""Hello,
 
-    for item in items:
-        plain_body_lines.append(
-            f"- Item ID: {item.get('item_id', 'N/A')}\n"
-            f"- Pickup Location: {item.get('pickup_location', 'N/A')}\n"
-        )
+We found your item! Here are the details:
+- Item ID: {item.get('item_id', 'N/A')}
+- Description: {item.get('description', 'N/A')}
+- Pickup Location: {item.get('pickup_location', 'N/A')}
 
-    plain_body_lines += [
-        "\nPlease pick up your item at the mentioned location.",
-        "If you believe this was sent in error, please ignore this message.\n",
-        "---------------------------------------------",
-        "Lost & Found Team",
-        
-    ]
-    plain_body = "\n".join(plain_body_lines)
+Please pick up your item at the mentioned location.
+---------------------------------------------
+Lost & Found Team
+"""
 
     # HTML version
-    html_items = "".join(
-        f"<li><b>Item ID:</b> {item.get('item_id', 'N/A')}<br>"
-        f"<b>Pickup Location:</b> {item.get('pickup_location', 'N/A')}</li>"
-        for item in items
-    )
-
     html_body = f"""
     <html>
     <body style="font-family: Arial, sans-serif; line-height: 1.6;">
         <p>Hello,</p>
-        <p>We found item(s) that match your description:</p>
+        <p>We found your item! Here are the details:</p>
         <ul>
-        {html_items}
+            <li><b>Item ID:</b> {item.get('item_id', 'N/A')}</li>
+            <li><b>Description:</b> {item.get('description', 'N/A')}</li>
+            <li><b>Pickup Location:</b> {item.get('pickup_location', 'N/A')}</li>
         </ul>
-        <p>
-        Please pick up your item(s) at the mentioned location(s).<br>
-        If you believe this was sent in error, please ignore this message.
-        </p>
+        <p>Please pick up your item at the mentioned location.</p>
         <hr>
-        <p>
-        <b>Lost & Found Team</b><br>
-        
-        </p>
+        <p><b>Lost & Found Team</b></p>
+        <p style="font-size: 12px; color: #777;">This is an automated message. Please do not reply.</p>
     </body>
     </html>
     """
@@ -392,16 +378,16 @@ def send_email_tool_func(user_email: str, items: list[dict]):
         msg["From"] = SENDER_EMAIL
         msg["To"] = user_email
 
-        
         msg.set_content(plain_body)
         msg.add_alternative(html_body, subtype="html")
 
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, context=context) as server:
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.send_message(msg)
 
-        return {"response": f"✅ Email sent to {user_email} with {len(items)} item(s).", "conversation_done": True}
+        return {"response": f"✅ Email sent to {user_email} for item '{item_desc}'.", "conversation_done": True}
+
     except Exception as e:
         return {"response": f"❌ Email failed: {e}", "conversation_done": True}
 
@@ -482,12 +468,11 @@ Rules:
 - If a match is found:
     • Call location_fetch_tool_func to get pickup location & item_id.
     • Build a short, friendly item description with id + pickup_location.
-    • Call send_email_tool_func with this item_id and pickup_location.
+    • Call send_email_tool_func with this item_id , a short item description and pickup_location.
     • Tell the user politely where and how to pick it up.
 - If no match is found:
     • Call unclaimed_item_store_tool_func with query, image, email, and name.
     • Tell the user politely that their request has been stored and they’ll be notified once a match is found.
-    • Suggest they check again in about a week.
 - If the query is vague or confidence is low:
     • Call followup_question_tool_func and politely ask the user for clarification.
 - Always address the user by name (if available) or with “you” / “your.”

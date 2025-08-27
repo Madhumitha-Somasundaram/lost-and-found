@@ -31,6 +31,8 @@ SENDER_EMAIL = os.getenv("Sender_email")
 SENDER_PASSWORD = os.getenv("App_Password")
 st.title("FyndIt - Lost & Found Agent")
 
+
+
 # --- Metadata fields ---
 metadata_fields = [
     "type", "brand", "color", "condition",
@@ -176,6 +178,29 @@ if st.session_state["otp"]:
             
 if st.session_state["email_verified"]:
     if st.session_state["mode"] is None:
+        st.markdown("""
+            ### How it Works
+
+            1. **Upload Your Lost Item**
+            - Click the **Upload** button to add a photo of the item.
+            - The Agent will provide a details like **color, brand, type, description and any hidden details**.
+            - Verify the details before submission.
+            - Your information will be stored securely.
+
+            2. **Search for Your Item**
+            - You can search using **text description, image, or both**.
+            - If using text, include **detailed description**: color, brand, type, and any special features.
+            - The system will try to find a match and notify you via email.
+            - If the match is not found, it'll store the details and notify you whenver the match is found.
+
+            3. **Pickup Instructions**
+            - If a match is found, you will receive an email with:
+                - **Item description**
+                - **Pickup location**
+                - **Item ID**
+            - You can then collect your item from the specified location.
+
+            """)
         mode = st.radio("Select Mode:", ["Upload Item", "Search Item"], index=None)
         col1, col2, col3 = st.columns([1, 0.01, 6])  
 
