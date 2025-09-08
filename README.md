@@ -19,7 +19,7 @@ A multimodal AI system that helps users efficiently manage lost and found items 
   Sends personalized emails with item details and pickup information to improve retrieval efficiency.
 
 - 💻 **Scalable & User-Friendly Interface**
-  Built using Streamlit, Python, LangChain, agentic RAG, and cloud services for an intuitive user experience.
+  Built using Streamlit, Python, LangGraph, agentic RAG, and cloud services for an intuitive user experience.
 
 
 ---
